@@ -7,10 +7,18 @@ resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
 }
 
-# ---------------- SUBNET ----------------
-resource "aws_subnet" "subnet" {
+# ---------------- SUBNETS (2 REQUIRED FOR ALB) ----------------
+resource "aws_subnet" "subnet1" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.0.1.0/24"
+  availability_zone       = "ap-south-1a"
+  map_public_ip_on_launch = true
+}
+
+resource "aws_subnet" "subnet2" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "ap-south-1b"
   map_public_ip_on_launch = true
 }
 
@@ -29,8 +37,13 @@ resource "aws_route" "route" {
   gateway_id             = aws_internet_gateway.igw.id
 }
 
-resource "aws_route_table_association" "rta" {
-  subnet_id      = aws_subnet.subnet.id
+resource "aws_route_table_association" "rta1" {
+  subnet_id      = aws_subnet.subnet1.id
+  route_table_id = aws_route_table.rt.id
+}
+
+resource "aws_route_table_association" "rta2" {
+  subnet_id      = aws_subnet.subnet2.id
   route_table_id = aws_route_table.rt.id
 }
 
@@ -102,7 +115,11 @@ resource "aws_lb" "alb" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.lb_sg.id]
-  subnets            = [aws_subnet.subnet.id]
+
+  subnets = [
+    aws_subnet.subnet1.id,
+    aws_subnet.subnet2.id
+  ]
 }
 
 # ---------------- TARGET GROUP ----------------
@@ -135,7 +152,11 @@ resource "aws_ecs_service" "service" {
   desired_count   = 1
 
   network_configuration {
-    subnets          = [aws_subnet.subnet.id]
+    subnets = [
+      aws_subnet.subnet1.id,
+      aws_subnet.subnet2.id
+    ]
+
     assign_public_ip = true
     security_groups  = [aws_security_group.ecs_sg.id]
   }
