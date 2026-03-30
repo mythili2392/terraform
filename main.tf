@@ -7,11 +7,12 @@ resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
 }
 
-# Subnet
+# Subnet (PUBLIC)
 resource "aws_subnet" "subnet" {
   vpc_id     = aws_vpc.main.id
   cidr_block = "10.0.1.0/24"
-  map_public_ip_on_launch = true
+
+  map_public_ip_on_launch = true   # 🔥 IMPORTANT FIX
 }
 
 # Internet Gateway
@@ -24,12 +25,14 @@ resource "aws_route_table" "rt" {
   vpc_id = aws_vpc.main.id
 }
 
+# Route to Internet
 resource "aws_route" "route" {
   route_table_id         = aws_route_table.rt.id
   destination_cidr_block = "0.0.0.0/0"
   gateway_id             = aws_internet_gateway.igw.id
 }
 
+# Associate Route Table
 resource "aws_route_table_association" "rta" {
   subnet_id      = aws_subnet.subnet.id
   route_table_id = aws_route_table.rt.id
@@ -43,6 +46,13 @@ resource "aws_security_group" "sg" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
@@ -81,7 +91,7 @@ resource "aws_ecs_service" "service" {
 
   network_configuration {
     subnets          = [aws_subnet.subnet.id]
-    assign_public_ip = true
+    assign_public_ip = true   # 🔥 IMPORTANT
     security_groups  = [aws_security_group.sg.id]
   }
 }
