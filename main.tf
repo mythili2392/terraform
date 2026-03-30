@@ -4,20 +4,23 @@ provider "aws" {
 
 # ---------------- VPC ----------------
 resource "aws_vpc" "main" {
-  cidr_block = "10.0.0.0/16"
+  cidr_block = "10.10.0.0/16"
+  tags = {
+    Name = "kiruma-vpc"
+  }
 }
 
-# ---------------- SUBNETS (2 REQUIRED FOR ALB) ----------------
+# ---------------- SUBNETS ----------------
 resource "aws_subnet" "subnet1" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
+  cidr_block              = "10.10.1.0/24"
   availability_zone       = "ap-south-1a"
   map_public_ip_on_launch = true
 }
 
 resource "aws_subnet" "subnet2" {
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.2.0/24"
+  cidr_block              = "10.10.2.0/24"
   availability_zone       = "ap-south-1b"
   map_public_ip_on_launch = true
 }
@@ -31,7 +34,7 @@ resource "aws_route_table" "rt" {
   vpc_id = aws_vpc.main.id
 }
 
-resource "aws_route" "route" {
+resource "aws_route" "internet_access" {
   route_table_id         = aws_route_table.rt.id
   destination_cidr_block = "0.0.0.0/0"
   gateway_id             = aws_internet_gateway.igw.id
@@ -47,8 +50,9 @@ resource "aws_route_table_association" "rta2" {
   route_table_id = aws_route_table.rt.id
 }
 
-# ---------------- SECURITY GROUP (ECS) ----------------
-resource "aws_security_group" "ecs_sg" {
+# ---------------- SECURITY GROUPS ----------------
+resource "aws_security_group" "alb_sg" {
+  name   = "alb-sg"
   vpc_id = aws_vpc.main.id
 
   ingress {
@@ -66,15 +70,15 @@ resource "aws_security_group" "ecs_sg" {
   }
 }
 
-# ---------------- SECURITY GROUP (ALB) ----------------
-resource "aws_security_group" "lb_sg" {
+resource "aws_security_group" "ecs_sg" {
+  name   = "ecs-sg"
   vpc_id = aws_vpc.main.id
 
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    security_groups = [aws_security_group.alb_sg.id]
   }
 
   egress {
@@ -102,8 +106,10 @@ resource "aws_ecs_task_definition" "app" {
     {
       name  = "nginx"
       image = "nginx"
+      essential = true
       portMappings = [{
         containerPort = 80
+        hostPort      = 80
       }]
     }
   ])
@@ -112,14 +118,12 @@ resource "aws_ecs_task_definition" "app" {
 # ---------------- LOAD BALANCER ----------------
 resource "aws_lb" "alb" {
   name               = "kiruma-alb"
-  internal           = false
   load_balancer_type = "application"
-  security_groups    = [aws_security_group.lb_sg.id]
-
   subnets = [
     aws_subnet.subnet1.id,
     aws_subnet.subnet2.id
   ]
+  security_groups = [aws_security_group.alb_sg.id]
 }
 
 # ---------------- TARGET GROUP ----------------
@@ -129,6 +133,16 @@ resource "aws_lb_target_group" "tg" {
   protocol    = "HTTP"
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
+
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
 }
 
 # ---------------- LISTENER ----------------
@@ -156,7 +170,6 @@ resource "aws_ecs_service" "service" {
       aws_subnet.subnet1.id,
       aws_subnet.subnet2.id
     ]
-
     assign_public_ip = true
     security_groups  = [aws_security_group.ecs_sg.id]
   }
