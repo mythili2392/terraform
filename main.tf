@@ -1,65 +1,72 @@
 provider "aws" {
-  region = "ap-south-1"
+  region = "ap-south-1" # Mumbai
 }
 
 # ---------------- VPC ----------------
-resource "aws_vpc" "main" {
-  cidr_block = "10.10.0.0/16"
+resource "aws_vpc" "my_vpc" {
+  cidr_block = "10.0.0.0/16"
+
   tags = {
-    Name = "kiruma-vpc"
+    Name = "my-vpc"
   }
 }
 
-# ---------------- SUBNETS ----------------
-resource "aws_subnet" "subnet1" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.10.1.0/24"
-  availability_zone       = "ap-south-1a"
+# ---------------- Subnet ----------------
+resource "aws_subnet" "my_subnet" {
+  vpc_id                  = aws_vpc.my_vpc.id
+  cidr_block              = "10.0.1.0/24"
   map_public_ip_on_launch = true
+
+  tags = {
+    Name = "my-subnet"
+  }
 }
 
-resource "aws_subnet" "subnet2" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.10.2.0/24"
-  availability_zone       = "ap-south-1b"
-  map_public_ip_on_launch = true
+# ---------------- Internet Gateway ----------------
+resource "aws_internet_gateway" "my_igw" {
+  vpc_id = aws_vpc.my_vpc.id
+
+  tags = {
+    Name = "my-igw"
+  }
 }
 
-# ---------------- INTERNET ----------------
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.main.id
+# ---------------- Route Table ----------------
+resource "aws_route_table" "my_rt" {
+  vpc_id = aws_vpc.my_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.my_igw.id
+  }
+
+  tags = {
+    Name = "my-rt"
+  }
 }
 
-resource "aws_route_table" "rt" {
-  vpc_id = aws_vpc.main.id
+# ---------------- Route Table Association ----------------
+resource "aws_route_table_association" "my_rta" {
+  subnet_id      = aws_subnet.my_subnet.id
+  route_table_id = aws_route_table.my_rt.id
 }
 
-resource "aws_route" "internet_access" {
-  route_table_id         = aws_route_table.rt.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.igw.id
-}
+# ---------------- Security Group ----------------
+resource "aws_security_group" "my_sg" {
+  vpc_id = aws_vpc.my_vpc.id
 
-resource "aws_route_table_association" "rta1" {
-  subnet_id      = aws_subnet.subnet1.id
-  route_table_id = aws_route_table.rt.id
-}
-
-resource "aws_route_table_association" "rta2" {
-  subnet_id      = aws_subnet.subnet2.id
-  route_table_id = aws_route_table.rt.id
-}
-
-# ---------------- SECURITY GROUPS ----------------
-resource "aws_security_group" "alb_sg" {
-  name   = "alb-sg"
-  vpc_id = aws_vpc.main.id
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # SSH
+  }
 
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"] # HTTP
   }
 
   egress {
@@ -68,117 +75,31 @@ resource "aws_security_group" "alb_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-}
 
-resource "aws_security_group" "ecs_sg" {
-  name   = "ecs-sg"
-  vpc_id = aws_vpc.main.id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    security_groups = [aws_security_group.alb_sg.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+  tags = {
+    Name = "my-sg"
   }
 }
 
-# ---------------- ECS CLUSTER ----------------
-resource "aws_ecs_cluster" "main" {
-  name = "kiruma-cluster"
-}
+# ---------------- EC2 Instance ----------------
+resource "aws_instance" "my_ec2" {
+  ami           = "ami-0f58b397bc5c1f2e8" # Ubuntu (ap-south-1)
+  instance_type = "t2.micro"
+  subnet_id     = aws_subnet.my_subnet.id
+  security_groups = [aws_security_group.my_sg.id]
 
-# ---------------- TASK DEFINITION ----------------
-resource "aws_ecs_task_definition" "app" {
-  family                   = "nginx-task"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = "256"
-  memory                   = "512"
+  key_name = "your-key-name" # change this
 
-  container_definitions = jsonencode([
-    {
-      name  = "nginx"
-      image = "nginx"
-      essential = true
-      portMappings = [{
-        containerPort = 80
-        hostPort      = 80
-      }]
-    }
-  ])
-}
+  user_data = <<-EOF
+              #!/bin/bash
+              apt update -y
+              apt install nginx -y
+              systemctl start nginx
+              systemctl enable nginx
+              echo "Hello from Terraform EC2" > /var/www/html/index.html
+              EOF
 
-# ---------------- LOAD BALANCER ----------------
-resource "aws_lb" "alb" {
-  name               = "kiruma-alb"
-  load_balancer_type = "application"
-  subnets = [
-    aws_subnet.subnet1.id,
-    aws_subnet.subnet2.id
-  ]
-  security_groups = [aws_security_group.alb_sg.id]
-}
-
-# ---------------- TARGET GROUP ----------------
-resource "aws_lb_target_group" "tg" {
-  name        = "kiruma-tg"
-  port        = 80
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
-  target_type = "ip"
-
-  health_check {
-    path                = "/"
-    protocol            = "HTTP"
-    matcher             = "200"
-    interval            = 30
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
+  tags = {
+    Name = "my-ec2"
   }
-}
-
-# ---------------- LISTENER ----------------
-resource "aws_lb_listener" "listener" {
-  load_balancer_arn = aws_lb.alb.arn
-  port              = 80
-  protocol          = "HTTP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.tg.arn
-  }
-}
-
-# ---------------- ECS SERVICE ----------------
-resource "aws_ecs_service" "service" {
-  name            = "nginx-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.app.arn
-  launch_type     = "FARGATE"
-  desired_count   = 1
-
-  network_configuration {
-    subnets = [
-      aws_subnet.subnet1.id,
-      aws_subnet.subnet2.id
-    ]
-    assign_public_ip = true
-    security_groups  = [aws_security_group.ecs_sg.id]
-  }
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.tg.arn
-    container_name   = "nginx"
-    container_port   = 80
-  }
-
-  depends_on = [aws_lb_listener.listener]
 }
